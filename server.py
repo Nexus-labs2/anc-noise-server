@@ -55,7 +55,7 @@ def compute_fft(samples):
 # =========================
 # DSP LOOP
 # =========================
-async def process_audio(app):
+async def process_audio():
     while True:
         await asyncio.sleep(0.03)
 
@@ -175,7 +175,7 @@ async def index(request):
     return web.FileResponse("index.html")
 
 async def health(request):
-    return web.Response(text="OK")
+    return web.Response(text="OK", status=200)
 
 # =========================
 # APP INIT
@@ -188,20 +188,29 @@ app.router.add_get('/ws', ws_audio_handler)
 app.router.add_get('/dashboard', ws_dashboard_handler)
 
 # =========================
-# STARTUP TASK
+# STARTUP TASK (FIXED)
 # =========================
-async def start_background_tasks(app):
-    app["audio_task"] = asyncio.create_task(process_audio(app))
+async def delayed_start(app):
+    print("🚀 Server started, delaying DSP init...")
+
+    await asyncio.sleep(2)  # IMPORTANT FIX
+
+    print("🎧 Starting DSP engine...")
+    app["audio_task"] = asyncio.create_task(process_audio())
 
 async def cleanup_background_tasks(app):
-    app["audio_task"].cancel()
+    if "audio_task" in app:
+        app["audio_task"].cancel()
 
-app.on_startup.append(start_background_tasks)
+app.on_startup.append(delayed_start)
 app.on_cleanup.append(cleanup_background_tasks)
 
 # =========================
 # MAIN
 # =========================
 if __name__ == "__main__":
+    print("🌐 Booting server...")
+
     port = int(os.environ.get("PORT", 8080))
+
     web.run_app(app, host="0.0.0.0", port=port)
