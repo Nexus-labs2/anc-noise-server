@@ -12,14 +12,8 @@ from aiohttp import web, WSMsgType
 # =========================
 SAMPLE_RATE = 16000
 BUFFER_SIZE = 1024
-CHANNELS = 3
 
-audio_buffers = {
-    0: [],
-    1: [],
-    2: []
-}
-
+audio_buffers = {0: [], 1: [], 2: []}
 dashboard_clients = set()
 
 # =========================
@@ -29,11 +23,11 @@ def parse_frame(data: bytes):
     if len(data) < 3:
         return None, None, None
 
-    channel_id = data[0]
-    sample_count = struct.unpack_from('<H', data, 1)[0]
-    samples = struct.unpack_from(f'<{sample_count}h', data, 3)
+    ch = data[0]
+    count = struct.unpack_from('<H', data, 1)[0]
+    samples = struct.unpack_from(f'<{count}h', data, 3)
 
-    return channel_id, sample_count, np.array(samples, dtype=np.int16)
+    return ch, count, np.array(samples, dtype=np.int16)
 
 # =========================
 # RMS
@@ -122,13 +116,16 @@ async def broadcast_dashboard(data):
         dashboard_clients.discard(ws)
 
 # =========================
-# ESP32 WS
+# ESP32 WEBSOCKET (FIXED)
 # =========================
 async def ws_audio_handler(request):
-    ws = web.WebSocketResponse()
+    ws = web.WebSocketResponse(
+        heartbeat=30,
+        max_msg_size=2**20
+    )
     await ws.prepare(request)
 
-    print("ESP32 connected")
+    print("✅ ESP32 connected")
 
     try:
         async for msg in ws:
@@ -138,13 +135,16 @@ async def ws_audio_handler(request):
                 if ch is not None:
                     audio_buffers[ch].extend(samples.tolist())
 
+            elif msg.type == WSMsgType.TEXT:
+                print("[WS TEXT]", msg.data)
+
             elif msg.type == WSMsgType.ERROR:
-                print("WS error:", ws.exception())
+                print("[WS ERROR]", ws.exception())
 
     except Exception as e:
-        print("ESP32 WS ERROR:", e)
+        print("[WS EXCEPTION]", e)
 
-    print("ESP32 disconnected")
+    print("❌ ESP32 disconnected")
     return ws
 
 # =========================
@@ -172,7 +172,7 @@ async def ws_dashboard_handler(request):
 # ROUTES
 # =========================
 async def index(request):
-    return web.FileResponse("index.html")
+    return web.Response(text="Server Running", status=200)
 
 async def health(request):
     return web.Response(text="OK", status=200)
@@ -188,29 +188,25 @@ app.router.add_get('/ws', ws_audio_handler)
 app.router.add_get('/dashboard', ws_dashboard_handler)
 
 # =========================
-# STARTUP TASK (FIXED)
+# STARTUP (FIXED)
 # =========================
 async def delayed_start(app):
-    print("🚀 Server started, delaying DSP init...")
+    print("🚀 Server started...")
+    await asyncio.sleep(2)
+    print("🎧 DSP engine starting...")
+    app["task"] = asyncio.create_task(process_audio())
 
-    await asyncio.sleep(2)  # IMPORTANT FIX
-
-    print("🎧 Starting DSP engine...")
-    app["audio_task"] = asyncio.create_task(process_audio())
-
-async def cleanup_background_tasks(app):
-    if "audio_task" in app:
-        app["audio_task"].cancel()
+async def cleanup(app):
+    if "task" in app:
+        app["task"].cancel()
 
 app.on_startup.append(delayed_start)
-app.on_cleanup.append(cleanup_background_tasks)
+app.on_cleanup.append(cleanup)
 
 # =========================
 # MAIN
 # =========================
 if __name__ == "__main__":
-    print("🌐 Booting server...")
-
     port = int(os.environ.get("PORT", 8080))
-
+    print("🌐 Listening on port", port)
     web.run_app(app, host="0.0.0.0", port=port)
