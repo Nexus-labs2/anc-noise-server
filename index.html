@@ -1,0 +1,174 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<title>ANC PRO Dashboard</title>
+
+<script src="https://cdn.tailwindcss.com"></script>
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+
+<style>
+body {
+  background: radial-gradient(circle at top, #0f172a, #020617);
+  color: white;
+  font-family: sans-serif;
+}
+
+.glass {
+  background: rgba(255,255,255,0.05);
+  backdrop-filter: blur(15px);
+  border: 1px solid rgba(255,255,255,0.1);
+}
+</style>
+</head>
+
+<body class="p-6">
+
+<h1 class="text-3xl text-center mb-6 font-bold">🎧 ANC PRO Dashboard</h1>
+
+<div class="grid grid-cols-1 md:grid-cols-3 gap-6">
+
+  <!-- Wave -->
+  <div class="glass p-4 rounded-xl col-span-2">
+    <h2 class="mb-2">Waveform</h2>
+    <canvas id="wave"></canvas>
+  </div>
+
+  <!-- Status -->
+  <div class="glass p-4 rounded-xl">
+    <h2>Status</h2>
+    <p id="status">Connecting...</p>
+    <p id="latency">Latency: -- ms</p>
+  </div>
+
+  <!-- FFT -->
+  <div class="glass p-4 rounded-xl col-span-2">
+    <h2 class="mb-2">FFT Spectrum</h2>
+    <canvas id="fft"></canvas>
+  </div>
+
+  <!-- RMS -->
+  <div class="glass p-4 rounded-xl">
+    <h2>Mic Levels</h2>
+    <div class="space-y-2">
+      <div class="h-3 bg-gray-700"><div id="r1" class="h-3 bg-green-400"></div></div>
+      <div class="h-3 bg-gray-700"><div id="r2" class="h-3 bg-blue-400"></div></div>
+      <div class="h-3 bg-gray-700"><div id="r3" class="h-3 bg-red-400"></div></div>
+    </div>
+  </div>
+
+  <!-- Direction -->
+  <div class="glass p-4 rounded-xl col-span-3 text-center">
+    <h2>Sound Direction</h2>
+    <div id="direction" class="text-4xl mt-2">⬤</div>
+  </div>
+
+  <!-- NEW: Noise Reduction + Label + Audio -->
+  <div class="glass p-4 rounded-xl col-span-3 text-center">
+    <button onclick="toggleNR()" class="bg-purple-600 px-4 py-2 rounded">
+      Toggle Noise Reduction
+    </button>
+
+    <p id="label" class="mt-2 text-lg"></p>
+
+    <audio id="audioPlayer" controls class="mt-2 w-full"></audio>
+  </div>
+
+</div>
+
+<script>
+const WS_URL = "wss://brilliant-courtesy-production-183a.up.railway.app/dashboard";
+
+let lastTime = Date.now();
+
+// Charts
+const waveChart = new Chart(document.getElementById("wave"), {
+  type: "line",
+  data: { labels: [], datasets: [
+    { data: [], borderColor: "cyan", tension: 0.2 },
+    { data: [], borderColor: "yellow", tension: 0.2 }
+  ]},
+  options: { animation:false, scales:{x:{display:false}} }
+});
+
+const fftChart = new Chart(document.getElementById("fft"), {
+  type: "bar",
+  data: { labels: [], datasets: [
+    { data: [], backgroundColor: "lime" }
+  ]},
+  options: { animation:false, scales:{x:{display:false}} }
+});
+
+// WS
+const ws = new WebSocket(WS_URL);
+
+ws.onopen = () => {
+  document.getElementById("status").innerText = "✅ Connected";
+};
+
+// ✅ MERGED HANDLER
+ws.onmessage = (e) => {
+  const now = Date.now();
+  document.getElementById("latency").innerText = "Latency: " + (now - lastTime) + " ms";
+  lastTime = now;
+
+  const d = JSON.parse(e.data);
+
+  // ===== LABEL (from code_2) =====
+  if (d.label) {
+    document.getElementById("label").innerText = "Detected: " + d.label;
+  }
+
+  // ===== AUDIO STREAM (from code_2) =====
+  if (d.audio_stream) {
+    const audioData = new Int16Array(d.audio_stream);
+    const blob = new Blob([audioData.buffer], { type: 'audio/raw' });
+    const url = URL.createObjectURL(blob);
+    document.getElementById("audioPlayer").src = url;
+  }
+
+  // ===== RMS =====
+  if (d.rms) {
+    const scale = 300;
+    document.getElementById("r1").style.width = (d.rms[0]/scale*100)+"%";
+    document.getElementById("r2").style.width = (d.rms[1]/scale*100)+"%";
+    document.getElementById("r3").style.width = (d.rms[2]/scale*100)+"%";
+
+    // Direction logic
+    let dir = "⬤";
+    if (d.rms[0] > d.rms[1] && d.rms[0] > d.rms[2]) dir = "⬅️";
+    else if (d.rms[1] > d.rms[0] && d.rms[1] > d.rms[2]) dir = "➡️";
+    else if (d.rms[2] > d.rms[0] && d.rms[2] > d.rms[1]) dir = "⬆️";
+    document.getElementById("direction").innerText = dir;
+  }
+
+  // ===== WAVE =====
+  if (d.waveform_raw && d.waveform_cleaned) {
+    waveChart.data.labels = d.waveform_raw.map((_,i)=>i);
+    waveChart.data.datasets[0].data = d.waveform_raw;
+    waveChart.data.datasets[1].data = d.waveform_cleaned;
+    waveChart.update();
+  }
+
+  // ===== FFT =====
+  if (d.fft_freqs && d.fft_cleaned) {
+    fftChart.data.labels = d.fft_freqs;
+    fftChart.data.datasets[0].data = d.fft_cleaned;
+    fftChart.update();
+  }
+};
+
+ws.onclose = () => {
+  document.getElementById("status").innerText = "❌ Disconnected";
+};
+
+// ===== NOISE REDUCTION TOGGLE =====
+function toggleNR() {
+  ws.send(JSON.stringify({
+    noise_reduction: true
+  }));
+}
+</script>
+
+</body>
+</html>

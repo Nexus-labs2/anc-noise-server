@@ -12,10 +12,15 @@ from aiohttp import web, WSMsgType
 # =========================
 SAMPLE_RATE = 16000
 BUFFER_SIZE = 1024
-MAX_BUFFER   = BUFFER_SIZE * 10  # 🔥 prevent infinite buffer growth
+MAX_BUFFER   = BUFFER_SIZE * 10
 
 audio_buffers = {0: [], 1: [], 2: []}
 dashboard_clients = set()
+
+# 🔥 ULTRA MODE CONTROL
+CONTROL = {
+    "noise_reduction": True
+}
 
 # =========================
 # FRAME PARSER
@@ -26,12 +31,12 @@ def parse_frame(data: bytes):
 
     ch = data[0]
 
-    if ch not in (0, 1, 2):  # 🔥 reject invalid channel
+    if ch not in (0, 1, 2):
         return None, None, None
 
     count = struct.unpack_from('<H', data, 1)[0]
 
-    if len(data) < 3 + count * 2:  # 🔥 bounds check
+    if len(data) < 3 + count * 2:
         return None, None, None
 
     try:
@@ -67,14 +72,13 @@ async def process_audio():
         await asyncio.sleep(0.03)
 
         try:
-            # 🔥 Trim buffers if they grow too large (stale data)
             for i in range(3):
                 if len(audio_buffers[i]) > MAX_BUFFER:
                     audio_buffers[i] = audio_buffers[i][-BUFFER_SIZE:]
                     print(f"⚠️ Buffer {i} overflow — trimmed")
 
             if not all(len(audio_buffers[i]) >= BUFFER_SIZE for i in range(3)):
-                continue  # 🔥 non-blocking skip instead of stalling
+                continue
 
             chunk = {}
             for i in range(3):
@@ -82,21 +86,23 @@ async def process_audio():
                 audio_buffers[i] = audio_buffers[i][BUFFER_SIZE:]
                 chunk[i] = np.array(data, dtype=np.float32) / 32768.0
 
-            # 🔥 Clamp to [-1, 1] before noise reduction
             for i in range(3):
                 chunk[i] = np.clip(chunk[i], -1.0, 1.0)
 
             cleaned = {}
             for i in range(3):
-                try:
-                    cleaned[i] = nr.reduce_noise(
-                        y=chunk[i],
-                        sr=SAMPLE_RATE,
-                        stationary=True
-                    )
-                except Exception as e:
-                    print(f"⚠️ Noise reduce failed ch{i}: {e}")
-                    cleaned[i] = chunk[i]  # 🔥 fallback to raw
+                if CONTROL["noise_reduction"]:
+                    try:
+                        cleaned[i] = nr.reduce_noise(
+                            y=chunk[i],
+                            sr=SAMPLE_RATE,
+                            stationary=True
+                        )
+                    except Exception as e:
+                        print(f"⚠️ Noise reduce failed ch{i}: {e}")
+                        cleaned[i] = chunk[i]
+                else:
+                    cleaned[i] = chunk[i]
 
             raw_mix   = (chunk[0]   + chunk[1]   + chunk[2])   / 3.0
             clean_mix = (cleaned[0] + cleaned[1] + cleaned[2]) / 3.0
@@ -112,16 +118,29 @@ async def process_audio():
             fft_freqs, fft_raw   = compute_fft(raw_mix)
             _,         fft_clean = compute_fft(clean_mix)
 
+            # 🔥 ULTRA MODE — SIMPLE CLASSIFICATION
+            avg_energy = np.mean(np.abs(raw_mix))
+            if avg_energy < 0.01:
+                label = "Silence"
+            elif avg_energy < 0.05:
+                label = "Speech"
+            else:
+                label = "Noise"
+
             payload = {
-                "rms":             rms,
-                "fft_freqs":       fft_freqs,
-                "fft_raw":         fft_raw,
-                "fft_cleaned":     fft_clean,
-                "waveform_raw":    raw_int16.tolist(),
-                "waveform_cleaned": clean_int16.tolist()
+                "rms": rms,
+                "fft_freqs": fft_freqs,
+                "fft_raw": fft_raw,
+                "fft_cleaned": fft_clean,
+                "waveform_raw": raw_int16.tolist(),
+                "waveform_cleaned": clean_int16.tolist(),
+
+                # 🔥 ULTRA MODE ADDITIONS
+                "label": label,
+                "timestamp": asyncio.get_event_loop().time(),
+                "audio_stream": clean_int16.tolist()
             }
 
-            # 🔥 Non-blocking broadcast
             asyncio.create_task(broadcast_dashboard(payload))
 
         except Exception as e:
@@ -139,10 +158,9 @@ async def broadcast_dashboard(data):
 
     await asyncio.gather(
         *[ws.send_str(msg) for ws in dashboard_clients],
-        return_exceptions=True  # 🔥 one bad client won't crash others
+        return_exceptions=True
     )
 
-    # Clean dead clients
     for ws in list(dashboard_clients):
         if ws.closed:
             dead.add(ws)
@@ -151,7 +169,7 @@ async def broadcast_dashboard(data):
         dashboard_clients.discard(ws)
 
 # =========================
-# ESP32 WEBSOCKET HANDLER
+# ESP32 WS HANDLER
 # =========================
 async def ws_audio_handler(request):
     print("🔌 Incoming WS request from:", request.remote)
@@ -166,7 +184,7 @@ async def ws_audio_handler(request):
     print("✅ ESP32 CONNECTED")
 
     try:
-        async for msg in ws:  # 🔥 cleaner loop, auto handles close/error
+        async for msg in ws:
             if msg.type == WSMsgType.BINARY:
                 ch, count, samples = parse_frame(msg.data)
                 if ch is not None:
@@ -183,7 +201,6 @@ async def ws_audio_handler(request):
         print("❌ WS EXCEPTION:", e)
 
     finally:
-        # 🔥 Clear buffers on disconnect to avoid stale data
         for i in range(3):
             audio_buffers[i].clear()
         print("🔴 ESP32 DISCONNECTED — buffers cleared")
@@ -191,7 +208,7 @@ async def ws_audio_handler(request):
     return ws
 
 # =========================
-# DASHBOARD WS HANDLER
+# DASHBOARD WS (ULTRA CONTROL)
 # =========================
 async def ws_dashboard_handler(request):
     ws = web.WebSocketResponse()
@@ -201,8 +218,18 @@ async def ws_dashboard_handler(request):
     print("📊 Dashboard connected — total:", len(dashboard_clients))
 
     try:
-        async for _ in ws:
-            pass
+        async for msg in ws:
+            if msg.type == WSMsgType.TEXT:
+                try:
+                    data = json.loads(msg.data)
+
+                    if "noise_reduction" in data:
+                        CONTROL["noise_reduction"] = data["noise_reduction"]
+                        print("🎛️ Noise Reduction:", CONTROL["noise_reduction"])
+
+                except Exception as e:
+                    print("⚠️ Control error:", e)
+
     except Exception:
         pass
     finally:
@@ -225,9 +252,9 @@ async def health(request):
 # =========================
 app = web.Application(client_max_size=1024**2)
 
-app.router.add_get('/',          index)
-app.router.add_get('/health',    health)
-app.router.add_get('/ws',        ws_audio_handler)
+app.router.add_get('/', index)
+app.router.add_get('/health', health)
+app.router.add_get('/ws', ws_audio_handler)
 app.router.add_get('/dashboard', ws_dashboard_handler)
 
 # =========================
