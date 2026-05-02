@@ -25,7 +25,11 @@ def parse_frame(data: bytes):
 
     ch = data[0]
     count = struct.unpack_from('<H', data, 1)[0]
-    samples = struct.unpack_from(f'<{count}h', data, 3)
+
+    try:
+        samples = struct.unpack_from(f'<{count}h', data, 3)
+    except:
+        return None, None, None
 
     return ch, count, np.array(samples, dtype=np.int16)
 
@@ -62,7 +66,6 @@ async def process_audio():
                     audio_buffers[i] = audio_buffers[i][BUFFER_SIZE:]
                     chunk[i] = np.array(data, dtype=np.float32) / 32768.0
 
-                # Noise reduction
                 cleaned = {}
                 for i in range(3):
                     cleaned[i] = nr.reduce_noise(
@@ -71,7 +74,6 @@ async def process_audio():
                         stationary=True
                     )
 
-                # Beamforming
                 raw_mix = (chunk[0] + chunk[1] + chunk[2]) / 3
                 clean_mix = (cleaned[0] + cleaned[1] + cleaned[2]) / 3
 
@@ -98,7 +100,7 @@ async def process_audio():
                 await broadcast_dashboard(payload)
 
         except Exception as e:
-            print("DSP ERROR:", e)
+            print("❌ DSP ERROR:", e)
 
 # =========================
 # BROADCAST
@@ -116,19 +118,26 @@ async def broadcast_dashboard(data):
         dashboard_clients.discard(ws)
 
 # =========================
-# ESP32 WEBSOCKET (FIXED)
+# ESP32 WEBSOCKET (FINAL FIX)
 # =========================
 async def ws_audio_handler(request):
+
+    print("🔌 Incoming WS request from:", request.remote)
+
     ws = web.WebSocketResponse(
-        heartbeat=30,
+        autoping=True,
+        heartbeat=20,
         max_msg_size=2**20
     )
+
     await ws.prepare(request)
 
-    print("✅ ESP32 connected")
+    print("✅ ESP32 CONNECTED")
 
     try:
-        async for msg in ws:
+        while True:
+            msg = await ws.receive()
+
             if msg.type == WSMsgType.BINARY:
                 ch, count, samples = parse_frame(msg.data)
 
@@ -136,15 +145,20 @@ async def ws_audio_handler(request):
                     audio_buffers[ch].extend(samples.tolist())
 
             elif msg.type == WSMsgType.TEXT:
-                print("[WS TEXT]", msg.data)
+                print("📩 TEXT:", msg.data)
+
+            elif msg.type == WSMsgType.CLOSED:
+                print("⚠️ WS CLOSED")
+                break
 
             elif msg.type == WSMsgType.ERROR:
-                print("[WS ERROR]", ws.exception())
+                print("❌ WS ERROR:", ws.exception())
+                break
 
     except Exception as e:
-        print("[WS EXCEPTION]", e)
+        print("❌ WS EXCEPTION:", e)
 
-    print("❌ ESP32 disconnected")
+    print("🔴 ESP32 DISCONNECTED")
     return ws
 
 # =========================
@@ -155,7 +169,7 @@ async def ws_dashboard_handler(request):
     await ws.prepare(request)
 
     dashboard_clients.add(ws)
-    print("Dashboard connected")
+    print("📊 Dashboard connected")
 
     try:
         async for _ in ws:
@@ -164,7 +178,7 @@ async def ws_dashboard_handler(request):
         pass
 
     dashboard_clients.discard(ws)
-    print("Dashboard disconnected")
+    print("📊 Dashboard disconnected")
 
     return ws
 
@@ -180,7 +194,7 @@ async def health(request):
 # =========================
 # APP INIT
 # =========================
-app = web.Application()
+app = web.Application(client_max_size=1024**2)
 
 app.router.add_get('/', index)
 app.router.add_get('/health', health)
@@ -188,7 +202,7 @@ app.router.add_get('/ws', ws_audio_handler)
 app.router.add_get('/dashboard', ws_dashboard_handler)
 
 # =========================
-# STARTUP (FIXED)
+# STARTUP
 # =========================
 async def delayed_start(app):
     print("🚀 Server started...")
