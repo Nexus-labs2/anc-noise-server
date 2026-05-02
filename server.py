@@ -242,7 +242,7 @@ async def ws_dashboard_handler(request):
 # ROUTES
 # =========================
 async def index(request):
-    return web.Response(text="Server Running", status=200)
+    return web.FileResponse("index.html")
 
 async def health(request):
     return web.Response(text="OK", status=200)
