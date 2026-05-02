@@ -6,6 +6,7 @@ import numpy as np
 import noisereduce as nr
 from scipy.fft import rfft, rfftfreq
 from aiohttp import web, WSMsgType
+import base64   # ✅ ADDED
 
 # =========================
 # GLOBAL CONFIG
@@ -127,6 +128,10 @@ async def process_audio():
             else:
                 label = "Noise"
 
+            # ✅ BASE64 AUDIO ENCODING (NEW)
+            audio_bytes = clean_int16.tobytes()
+            audio_b64 = base64.b64encode(audio_bytes).decode()
+
             payload = {
                 "rms": rms,
                 "fft_freqs": fft_freqs,
@@ -138,7 +143,10 @@ async def process_audio():
                 # 🔥 ULTRA MODE ADDITIONS
                 "label": label,
                 "timestamp": asyncio.get_event_loop().time(),
-                "audio_stream": clean_int16.tolist()
+
+                # ✅ UPDATED FIELD
+                "audio_b64": audio_b64,
+                "sample_rate": SAMPLE_RATE
             }
 
             asyncio.create_task(broadcast_dashboard(payload))

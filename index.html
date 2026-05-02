@@ -1,4 +1,4 @@
-<!DOCTYPE html>
+<!DOCTYPE html> 
 <html>
 <head>
 <meta charset="UTF-8">
@@ -13,7 +13,6 @@ body {
   color: white;
   font-family: sans-serif;
 }
-
 .glass {
   background: rgba(255,255,255,0.05);
   backdrop-filter: blur(15px);
@@ -26,28 +25,31 @@ body {
 
 <h1 class="text-3xl text-center mb-6 font-bold">🎧 ANC PRO Dashboard</h1>
 
+<!-- ✅ REQUIRED BUTTON -->
+<div class="text-center mb-4">
+  <button onclick="audioCtx.resume()" class="bg-green-500 px-4 py-2 rounded">
+    ▶ Start Audio
+  </button>
+</div>
+
 <div class="grid grid-cols-1 md:grid-cols-3 gap-6">
 
-  <!-- Wave -->
   <div class="glass p-4 rounded-xl col-span-2">
     <h2 class="mb-2">Waveform</h2>
     <canvas id="wave"></canvas>
   </div>
 
-  <!-- Status -->
   <div class="glass p-4 rounded-xl">
     <h2>Status</h2>
     <p id="status">Connecting...</p>
     <p id="latency">Latency: -- ms</p>
   </div>
 
-  <!-- FFT -->
   <div class="glass p-4 rounded-xl col-span-2">
     <h2 class="mb-2">FFT Spectrum</h2>
     <canvas id="fft"></canvas>
   </div>
 
-  <!-- RMS -->
   <div class="glass p-4 rounded-xl">
     <h2>Mic Levels</h2>
     <div class="space-y-2">
@@ -57,21 +59,17 @@ body {
     </div>
   </div>
 
-  <!-- Direction -->
   <div class="glass p-4 rounded-xl col-span-3 text-center">
     <h2>Sound Direction</h2>
     <div id="direction" class="text-4xl mt-2">⬤</div>
   </div>
 
-  <!-- NEW: Noise Reduction + Label + Audio -->
+  <!-- UPDATED CONTROL PANEL -->
   <div class="glass p-4 rounded-xl col-span-3 text-center">
     <button onclick="toggleNR()" class="bg-purple-600 px-4 py-2 rounded">
       Toggle Noise Reduction
     </button>
-
     <p id="label" class="mt-2 text-lg"></p>
-
-    <audio id="audioPlayer" controls class="mt-2 w-full"></audio>
   </div>
 
 </div>
@@ -81,7 +79,41 @@ const WS_URL = "wss://brilliant-courtesy-production-183a.up.railway.app/dashboar
 
 let lastTime = Date.now();
 
-// Charts
+// ================= AUDIO ENGINE =================
+const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+let lastPlayTime = 0;
+
+// PCM Int16 → Float32
+function pcm16ToFloat32(buffer) {
+  const view = new DataView(buffer);
+  const float32 = new Float32Array(buffer.byteLength / 2);
+
+  for (let i = 0; i < float32.length; i++) {
+    float32[i] = view.getInt16(i * 2, true) / 32768;
+  }
+  return float32;
+}
+
+// Smooth playback
+function playAudioChunk(arrayBuffer, sampleRate) {
+  const float32 = pcm16ToFloat32(arrayBuffer);
+
+  const audioBuffer = audioCtx.createBuffer(1, float32.length, sampleRate);
+  audioBuffer.getChannelData(0).set(float32);
+
+  const source = audioCtx.createBufferSource();
+  source.buffer = audioBuffer;
+  source.connect(audioCtx.destination);
+
+  if (lastPlayTime < audioCtx.currentTime) {
+    lastPlayTime = audioCtx.currentTime;
+  }
+
+  source.start(lastPlayTime);
+  lastPlayTime += audioBuffer.duration;
+}
+
+// ================= CHARTS =================
 const waveChart = new Chart(document.getElementById("wave"), {
   type: "line",
   data: { labels: [], datasets: [
@@ -99,14 +131,13 @@ const fftChart = new Chart(document.getElementById("fft"), {
   options: { animation:false, scales:{x:{display:false}} }
 });
 
-// WS
+// ================= WS =================
 const ws = new WebSocket(WS_URL);
 
 ws.onopen = () => {
   document.getElementById("status").innerText = "✅ Connected";
 };
 
-// ✅ MERGED HANDLER
 ws.onmessage = (e) => {
   const now = Date.now();
   document.getElementById("latency").innerText = "Latency: " + (now - lastTime) + " ms";
@@ -114,17 +145,23 @@ ws.onmessage = (e) => {
 
   const d = JSON.parse(e.data);
 
-  // ===== LABEL (from code_2) =====
+  // ===== LABEL =====
   if (d.label) {
     document.getElementById("label").innerText = "Detected: " + d.label;
   }
 
-  // ===== AUDIO STREAM (from code_2) =====
-  if (d.audio_stream) {
-    const audioData = new Int16Array(d.audio_stream);
-    const blob = new Blob([audioData.buffer], { type: 'audio/raw' });
-    const url = URL.createObjectURL(blob);
-    document.getElementById("audioPlayer").src = url;
+  // ===== ✅ NEW BASE64 AUDIO =====
+  if (d.audio_b64) {
+    const binary = atob(d.audio_b64);
+    const len = binary.length;
+    const buffer = new ArrayBuffer(len);
+    const view = new Uint8Array(buffer);
+
+    for (let i = 0; i < len; i++) {
+      view[i] = binary.charCodeAt(i);
+    }
+
+    playAudioChunk(buffer, d.sample_rate);
   }
 
   // ===== RMS =====
@@ -134,11 +171,11 @@ ws.onmessage = (e) => {
     document.getElementById("r2").style.width = (d.rms[1]/scale*100)+"%";
     document.getElementById("r3").style.width = (d.rms[2]/scale*100)+"%";
 
-    // Direction logic
     let dir = "⬤";
     if (d.rms[0] > d.rms[1] && d.rms[0] > d.rms[2]) dir = "⬅️";
     else if (d.rms[1] > d.rms[0] && d.rms[1] > d.rms[2]) dir = "➡️";
     else if (d.rms[2] > d.rms[0] && d.rms[2] > d.rms[1]) dir = "⬆️";
+
     document.getElementById("direction").innerText = dir;
   }
 
@@ -162,7 +199,7 @@ ws.onclose = () => {
   document.getElementById("status").innerText = "❌ Disconnected";
 };
 
-// ===== NOISE REDUCTION TOGGLE =====
+// ===== CONTROL =====
 function toggleNR() {
   ws.send(JSON.stringify({
     noise_reduction: true
