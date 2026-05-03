@@ -1,4 +1,4 @@
-<!DOCTYPE html> 
+<!DOCTYPE html>
 <html>
 <head>
 <meta charset="UTF-8">
@@ -25,29 +25,28 @@ body {
 
 <h1 class="text-3xl text-center mb-6 font-bold">🎧 ANC PRO Dashboard</h1>
 
-<!-- ✅ REQUIRED BUTTON -->
-<div class="text-center mb-4">
-  <button onclick="audioCtx.resume()" class="bg-green-500 px-4 py-2 rounded">
-    ▶ Start Audio
-  </button>
-</div>
-
 <div class="grid grid-cols-1 md:grid-cols-3 gap-6">
 
+  <!-- AUDIO PLAYERS -->
+  <div class="glass p-4 rounded-xl col-span-3 text-center">
+    <h2 class="mb-2">Audio Comparison</h2>
+
+    <p>Original</p>
+    <audio id="rawPlayer" controls></audio>
+
+    <p class="mt-2">Cleaned</p>
+    <audio id="cleanPlayer" controls></audio>
+  </div>
+
   <div class="glass p-4 rounded-xl col-span-2">
-    <h2 class="mb-2">Waveform</h2>
-    <canvas id="wave"></canvas>
+    <h2 class="mb-2">FFT Spectrum</h2>
+    <canvas id="fft"></canvas>
   </div>
 
   <div class="glass p-4 rounded-xl">
     <h2>Status</h2>
     <p id="status">Connecting...</p>
     <p id="latency">Latency: -- ms</p>
-  </div>
-
-  <div class="glass p-4 rounded-xl col-span-2">
-    <h2 class="mb-2">FFT Spectrum</h2>
-    <canvas id="fft"></canvas>
   </div>
 
   <div class="glass p-4 rounded-xl">
@@ -59,17 +58,16 @@ body {
     </div>
   </div>
 
-  <div class="glass p-4 rounded-xl col-span-3 text-center">
+  <div class="glass p-4 rounded-xl col-span-2 text-center">
     <h2>Sound Direction</h2>
     <div id="direction" class="text-4xl mt-2">⬤</div>
   </div>
 
-  <!-- UPDATED CONTROL PANEL -->
   <div class="glass p-4 rounded-xl col-span-3 text-center">
     <button onclick="toggleNR()" class="bg-purple-600 px-4 py-2 rounded">
       Toggle Noise Reduction
     </button>
-    <p id="label" class="mt-2 text-lg"></p>
+    <p id="nrState" class="mt-2 text-lg">NR: ON</p>
   </div>
 
 </div>
@@ -78,51 +76,9 @@ body {
 const WS_URL = "wss://brilliant-courtesy-production-183a.up.railway.app/dashboard";
 
 let lastTime = Date.now();
+let nrEnabled = true;
 
-// ================= AUDIO ENGINE =================
-const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-let lastPlayTime = 0;
-
-// PCM Int16 → Float32
-function pcm16ToFloat32(buffer) {
-  const view = new DataView(buffer);
-  const float32 = new Float32Array(buffer.byteLength / 2);
-
-  for (let i = 0; i < float32.length; i++) {
-    float32[i] = view.getInt16(i * 2, true) / 32768;
-  }
-  return float32;
-}
-
-// Smooth playback
-function playAudioChunk(arrayBuffer, sampleRate) {
-  const float32 = pcm16ToFloat32(arrayBuffer);
-
-  const audioBuffer = audioCtx.createBuffer(1, float32.length, sampleRate);
-  audioBuffer.getChannelData(0).set(float32);
-
-  const source = audioCtx.createBufferSource();
-  source.buffer = audioBuffer;
-  source.connect(audioCtx.destination);
-
-  if (lastPlayTime < audioCtx.currentTime) {
-    lastPlayTime = audioCtx.currentTime;
-  }
-
-  source.start(lastPlayTime);
-  lastPlayTime += audioBuffer.duration;
-}
-
-// ================= CHARTS =================
-const waveChart = new Chart(document.getElementById("wave"), {
-  type: "line",
-  data: { labels: [], datasets: [
-    { data: [], borderColor: "cyan", tension: 0.2 },
-    { data: [], borderColor: "yellow", tension: 0.2 }
-  ]},
-  options: { animation:false, scales:{x:{display:false}} }
-});
-
+// ================= CHART =================
 const fftChart = new Chart(document.getElementById("fft"), {
   type: "bar",
   data: { labels: [], datasets: [
@@ -145,31 +101,20 @@ ws.onmessage = (e) => {
 
   const d = JSON.parse(e.data);
 
-  // ===== LABEL =====
-  if (d.label) {
-    document.getElementById("label").innerText = "Detected: " + d.label;
+  // ===== AUDIO PLAYBACK (WAV FIX) =====
+  if (d.audio_raw && d.audio_clean) {
+    const rawBlob = base64ToBlob(d.audio_raw);
+    const cleanBlob = base64ToBlob(d.audio_clean);
+
+    document.getElementById("rawPlayer").src = URL.createObjectURL(rawBlob);
+    document.getElementById("cleanPlayer").src = URL.createObjectURL(cleanBlob);
   }
 
-  // ===== ✅ NEW BASE64 AUDIO =====
-  if (d.audio_b64) {
-    const binary = atob(d.audio_b64);
-    const len = binary.length;
-    const buffer = new ArrayBuffer(len);
-    const view = new Uint8Array(buffer);
-
-    for (let i = 0; i < len; i++) {
-      view[i] = binary.charCodeAt(i);
-    }
-
-    playAudioChunk(buffer, d.sample_rate);
-  }
-
-  // ===== RMS =====
+  // ===== RMS (FIXED SCALING) =====
   if (d.rms) {
-    const scale = 300;
-    document.getElementById("r1").style.width = (d.rms[0]/scale*100)+"%";
-    document.getElementById("r2").style.width = (d.rms[1]/scale*100)+"%";
-    document.getElementById("r3").style.width = (d.rms[2]/scale*100)+"%";
+    document.getElementById("r1").style.width = (d.rms[0]*100)+"%";
+    document.getElementById("r2").style.width = (d.rms[1]*100)+"%";
+    document.getElementById("r3").style.width = (d.rms[2]*100)+"%";
 
     let dir = "⬤";
     if (d.rms[0] > d.rms[1] && d.rms[0] > d.rms[2]) dir = "⬅️";
@@ -179,17 +124,9 @@ ws.onmessage = (e) => {
     document.getElementById("direction").innerText = dir;
   }
 
-  // ===== WAVE =====
-  if (d.waveform_raw && d.waveform_cleaned) {
-    waveChart.data.labels = d.waveform_raw.map((_,i)=>i);
-    waveChart.data.datasets[0].data = d.waveform_raw;
-    waveChart.data.datasets[1].data = d.waveform_cleaned;
-    waveChart.update();
-  }
-
   // ===== FFT =====
-  if (d.fft_freqs && d.fft_cleaned) {
-    fftChart.data.labels = d.fft_freqs;
+  if (d.fft_cleaned) {
+    fftChart.data.labels = d.fft_cleaned.map((_,i)=>i);
     fftChart.data.datasets[0].data = d.fft_cleaned;
     fftChart.update();
   }
@@ -199,11 +136,28 @@ ws.onclose = () => {
   document.getElementById("status").innerText = "❌ Disconnected";
 };
 
-// ===== CONTROL =====
+// ================= HELPERS =================
+function base64ToBlob(base64) {
+  const byteChars = atob(base64);
+  const byteNumbers = new Array(byteChars.length);
+
+  for (let i = 0; i < byteChars.length; i++) {
+    byteNumbers[i] = byteChars.charCodeAt(i);
+  }
+
+  return new Blob([new Uint8Array(byteNumbers)], { type: "audio/wav" });
+}
+
+// ================= CONTROL =================
 function toggleNR() {
+  nrEnabled = !nrEnabled;
+
   ws.send(JSON.stringify({
-    noise_reduction: true
+    noise_reduction: nrEnabled
   }));
+
+  document.getElementById("nrState").innerText =
+    "NR: " + (nrEnabled ? "ON" : "OFF");
 }
 </script>
 

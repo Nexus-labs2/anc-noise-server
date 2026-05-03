@@ -6,19 +6,20 @@ import numpy as np
 import noisereduce as nr
 from scipy.fft import rfft, rfftfreq
 from aiohttp import web, WSMsgType
-import base64   # ✅ ADDED
+import io
+import wave
+import base64
 
 # =========================
-# GLOBAL CONFIG
+# CONFIG
 # =========================
 SAMPLE_RATE = 16000
-BUFFER_SIZE = 1024
-MAX_BUFFER   = BUFFER_SIZE * 10
+BUFFER_SECONDS = 3
+TARGET_SAMPLES = SAMPLE_RATE * BUFFER_SECONDS
 
 audio_buffers = {0: [], 1: [], 2: []}
 dashboard_clients = set()
 
-# 🔥 ULTRA MODE CONTROL
 CONTROL = {
     "noise_reduction": True
 }
@@ -31,121 +32,104 @@ def parse_frame(data: bytes):
         return None, None, None
 
     ch = data[0]
-
-    if ch not in (0, 1, 2):
-        return None, None, None
-
     count = struct.unpack_from('<H', data, 1)[0]
 
-    if len(data) < 3 + count * 2:
-        return None, None, None
-
-    try:
-        samples = struct.unpack_from(f'<{count}h', data, 3)
-    except Exception as e:
-        print(f"❌ Frame parse error: {e}")
-        return None, None, None
-
+    samples = struct.unpack_from(f'<{count}h', data, 3)
     return ch, count, np.array(samples, dtype=np.int16)
 
 # =========================
-# RMS
+# WAV CONVERSION
 # =========================
-def compute_rms(x):
-    return int(np.sqrt(np.mean(x.astype(np.float32) ** 2)))
+def to_wav(audio):
+    buffer = io.BytesIO()
+    with wave.open(buffer, 'wb') as wf:
+        wf.setnchannels(1)
+        wf.setsampwidth(2)
+        wf.setframerate(SAMPLE_RATE)
+        wf.writeframes(audio.tobytes())
+    return buffer.getvalue()
 
 # =========================
-# FFT
+# RMS (NORMALIZED)
+# =========================
+def compute_rms(x):
+    rms = np.sqrt(np.mean(x.astype(np.float32)**2))
+    return float(rms / 32768.0)
+
+# =========================
+# FFT (REDUCED)
 # =========================
 def compute_fft(samples):
     windowed = samples * np.hanning(len(samples))
     spectrum = np.abs(rfft(windowed))
-    freqs = rfftfreq(len(samples), 1 / SAMPLE_RATE)
+    spectrum = spectrum / np.max(spectrum + 1e-6)
 
-    half = len(freqs) // 2
-    return freqs[:half].tolist(), spectrum[:half].tolist()
+    return spectrum[:100].tolist()
 
 # =========================
 # DSP LOOP
 # =========================
 async def process_audio():
     while True:
-        await asyncio.sleep(0.03)
+        await asyncio.sleep(0.1)
 
         try:
-            for i in range(3):
-                if len(audio_buffers[i]) > MAX_BUFFER:
-                    audio_buffers[i] = audio_buffers[i][-BUFFER_SIZE:]
-                    print(f"⚠️ Buffer {i} overflow — trimmed")
-
-            if not all(len(audio_buffers[i]) >= BUFFER_SIZE for i in range(3)):
+            # Wait for enough data
+            if not all(len(audio_buffers[i]) >= TARGET_SAMPLES for i in range(3)):
                 continue
 
             chunk = {}
             for i in range(3):
-                data = audio_buffers[i][:BUFFER_SIZE]
-                audio_buffers[i] = audio_buffers[i][BUFFER_SIZE:]
+                data = audio_buffers[i][:TARGET_SAMPLES]
+                audio_buffers[i] = audio_buffers[i][TARGET_SAMPLES:]
                 chunk[i] = np.array(data, dtype=np.float32) / 32768.0
 
-            for i in range(3):
-                chunk[i] = np.clip(chunk[i], -1.0, 1.0)
+            # Mix
+            raw_mix = (chunk[0] + chunk[1] + chunk[2]) / 3.0
 
-            cleaned = {}
-            for i in range(3):
-                if CONTROL["noise_reduction"]:
-                    try:
-                        cleaned[i] = nr.reduce_noise(
-                            y=chunk[i],
-                            sr=SAMPLE_RATE,
-                            stationary=True
-                        )
-                    except Exception as e:
-                        print(f"⚠️ Noise reduce failed ch{i}: {e}")
-                        cleaned[i] = chunk[i]
-                else:
-                    cleaned[i] = chunk[i]
+            # 🔥 Noise profile (first 0.5 sec)
+            noise_profile = raw_mix[:int(0.5 * SAMPLE_RATE)]
 
-            raw_mix   = (chunk[0]   + chunk[1]   + chunk[2])   / 3.0
-            clean_mix = (cleaned[0] + cleaned[1] + cleaned[2]) / 3.0
+            # 🔥 Noise Reduction (FIXED)
+            if CONTROL["noise_reduction"]:
+                clean_mix = nr.reduce_noise(
+                    y=raw_mix,
+                    sr=SAMPLE_RATE,
+                    y_noise=noise_profile,
+                    stationary=True
+                )
+            else:
+                clean_mix = raw_mix
 
-            raw_int16   = (raw_mix   * 32767).astype(np.int16)
+            # Convert back
+            raw_int16 = (raw_mix * 32767).astype(np.int16)
             clean_int16 = (clean_mix * 32767).astype(np.int16)
 
+            # 🔥 WAV encoding (IMPORTANT FIX)
+            raw_wav = to_wav(raw_int16)
+            clean_wav = to_wav(clean_int16)
+
+            raw_b64 = base64.b64encode(raw_wav).decode()
+            clean_b64 = base64.b64encode(clean_wav).decode()
+
+            # RMS
             rms = [
                 compute_rms((chunk[i] * 32767).astype(np.int16))
                 for i in range(3)
             ]
 
-            fft_freqs, fft_raw   = compute_fft(raw_mix)
-            _,         fft_clean = compute_fft(clean_mix)
-
-            # 🔥 ULTRA MODE — SIMPLE CLASSIFICATION
-            avg_energy = np.mean(np.abs(raw_mix))
-            if avg_energy < 0.01:
-                label = "Silence"
-            elif avg_energy < 0.05:
-                label = "Speech"
-            else:
-                label = "Noise"
-
-            # ✅ BASE64 AUDIO ENCODING (NEW)
-            audio_bytes = clean_int16.tobytes()
-            audio_b64 = base64.b64encode(audio_bytes).decode()
+            # FFT
+            fft_raw = compute_fft(raw_mix)
+            fft_clean = compute_fft(clean_mix)
 
             payload = {
                 "rms": rms,
-                "fft_freqs": fft_freqs,
                 "fft_raw": fft_raw,
                 "fft_cleaned": fft_clean,
-                "waveform_raw": raw_int16.tolist(),
-                "waveform_cleaned": clean_int16.tolist(),
 
-                # 🔥 ULTRA MODE ADDITIONS
-                "label": label,
-                "timestamp": asyncio.get_event_loop().time(),
+                "audio_raw": raw_b64,
+                "audio_clean": clean_b64,
 
-                # ✅ UPDATED FIELD
-                "audio_b64": audio_b64,
                 "sample_rate": SAMPLE_RATE
             }
 
@@ -162,33 +146,19 @@ async def broadcast_dashboard(data):
         return
 
     msg = json.dumps(data)
-    dead = set()
 
     await asyncio.gather(
         *[ws.send_str(msg) for ws in dashboard_clients],
         return_exceptions=True
     )
 
-    for ws in list(dashboard_clients):
-        if ws.closed:
-            dead.add(ws)
-
-    for ws in dead:
-        dashboard_clients.discard(ws)
-
 # =========================
-# ESP32 WS HANDLER
+# ESP32 WS
 # =========================
 async def ws_audio_handler(request):
-    print("🔌 Incoming WS request from:", request.remote)
-
-    ws = web.WebSocketResponse(
-        autoping=True,
-        heartbeat=20,
-        max_msg_size=2**20
-    )
-
+    ws = web.WebSocketResponse()
     await ws.prepare(request)
+
     print("✅ ESP32 CONNECTED")
 
     try:
@@ -198,51 +168,32 @@ async def ws_audio_handler(request):
                 if ch is not None:
                     audio_buffers[ch].extend(samples.tolist())
 
-            elif msg.type == WSMsgType.TEXT:
-                print("📩 TEXT:", msg.data)
-
-            elif msg.type == WSMsgType.ERROR:
-                print("❌ WS ERROR:", ws.exception())
-                break
-
-    except Exception as e:
-        print("❌ WS EXCEPTION:", e)
-
     finally:
         for i in range(3):
             audio_buffers[i].clear()
-        print("🔴 ESP32 DISCONNECTED — buffers cleared")
+        print("🔴 ESP32 DISCONNECTED")
 
     return ws
 
 # =========================
-# DASHBOARD WS (ULTRA CONTROL)
+# DASHBOARD WS
 # =========================
 async def ws_dashboard_handler(request):
     ws = web.WebSocketResponse()
     await ws.prepare(request)
 
     dashboard_clients.add(ws)
-    print("📊 Dashboard connected — total:", len(dashboard_clients))
 
     try:
         async for msg in ws:
             if msg.type == WSMsgType.TEXT:
-                try:
-                    data = json.loads(msg.data)
+                data = json.loads(msg.data)
 
-                    if "noise_reduction" in data:
-                        CONTROL["noise_reduction"] = data["noise_reduction"]
-                        print("🎛️ Noise Reduction:", CONTROL["noise_reduction"])
+                if "noise_reduction" in data:
+                    CONTROL["noise_reduction"] = data["noise_reduction"]
 
-                except Exception as e:
-                    print("⚠️ Control error:", e)
-
-    except Exception:
-        pass
     finally:
         dashboard_clients.discard(ws)
-        print("📊 Dashboard disconnected — total:", len(dashboard_clients))
 
     return ws
 
@@ -252,44 +203,20 @@ async def ws_dashboard_handler(request):
 async def index(request):
     return web.FileResponse("index.html")
 
-async def health(request):
-    return web.Response(text="OK", status=200)
-
-# =========================
-# APP INIT
-# =========================
-app = web.Application(client_max_size=1024**2)
+app = web.Application()
 
 app.router.add_get('/', index)
-app.router.add_get('/health', health)
 app.router.add_get('/ws', ws_audio_handler)
 app.router.add_get('/dashboard', ws_dashboard_handler)
 
 # =========================
-# STARTUP / CLEANUP
+# START
 # =========================
-async def delayed_start(app):
-    print("🚀 Server started...")
-    await asyncio.sleep(2)
-    print("🎧 DSP engine starting...")
+async def start_bg(app):
     app["task"] = asyncio.create_task(process_audio())
 
-async def cleanup(app):
-    if "task" in app:
-        app["task"].cancel()
-        try:
-            await app["task"]
-        except asyncio.CancelledError:
-            pass
-        print("🛑 DSP task cancelled cleanly")
+app.on_startup.append(start_bg)
 
-app.on_startup.append(delayed_start)
-app.on_cleanup.append(cleanup)
-
-# =========================
-# MAIN
-# =========================
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8080))
-    print("🌐 Listening on port", port)
     web.run_app(app, host="0.0.0.0", port=port)
