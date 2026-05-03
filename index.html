@@ -1,165 +1,470 @@
 <!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
 <meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>ANC PRO Dashboard</title>
-
 <script src="https://cdn.tailwindcss.com"></script>
-<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
-
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
 <style>
-body {
-  background: radial-gradient(circle at top, #0f172a, #020617);
-  color: white;
-  font-family: sans-serif;
-}
-.glass {
-  background: rgba(255,255,255,0.05);
-  backdrop-filter: blur(15px);
-  border: 1px solid rgba(255,255,255,0.1);
-}
+  * { box-sizing: border-box; }
+  body {
+    background: radial-gradient(circle at top, #0f172a 0%, #020617 100%);
+    color: #e2e8f0;
+    font-family: 'Segoe UI', system-ui, sans-serif;
+    min-height: 100vh;
+  }
+  .glass {
+    background: rgba(255,255,255,0.04);
+    backdrop-filter: blur(12px);
+    border: 1px solid rgba(255,255,255,0.08);
+    border-radius: 12px;
+  }
+  .dot { width:10px; height:10px; border-radius:50%; display:inline-block; margin-right:6px; }
+  .dot-green { background:#22c55e; box-shadow:0 0 6px #22c55e; }
+  .dot-red   { background:#ef4444; box-shadow:0 0 6px #ef4444; }
+  .dot-yellow{ background:#f59e0b; box-shadow:0 0 6px #f59e0b; }
+  canvas { display:block; }
+  .bar-track { background:rgba(255,255,255,0.08); border-radius:4px; overflow:hidden; height:10px; }
+  .bar-fill  { height:100%; border-radius:4px; transition: width 0.15s ease; }
 </style>
 </head>
 
-<body class="p-6">
+<body class="p-4">
 
-<h1 class="text-3xl text-center mb-6 font-bold">🎧 ANC PRO Dashboard</h1>
-
-<div class="grid grid-cols-1 md:grid-cols-3 gap-6">
-
-  <!-- AUDIO PLAYERS -->
-  <div class="glass p-4 rounded-xl col-span-3 text-center">
-    <h2 class="mb-2">Audio Comparison</h2>
-
-    <p>Original</p>
-    <audio id="rawPlayer" controls></audio>
-
-    <p class="mt-2">Cleaned</p>
-    <audio id="cleanPlayer" controls></audio>
+<!-- HEADER -->
+<div class="flex items-center justify-between mb-4">
+  <h1 class="text-2xl font-bold text-white">🎧 ANC PRO Dashboard</h1>
+  <div class="flex gap-3 text-sm items-center">
+    <span id="ws-indicator"><span class="dot dot-yellow"></span>Connecting...</span>
+    <span id="esp-indicator"><span class="dot dot-red"></span>ESP32 ---</span>
+    <span id="chunk-counter" class="text-slate-400 text-xs">chunks: 0</span>
   </div>
+</div>
 
-  <div class="glass p-4 rounded-xl col-span-2">
-    <h2 class="mb-2">FFT Spectrum</h2>
-    <canvas id="fft"></canvas>
-  </div>
+<div class="grid grid-cols-1 lg:grid-cols-3 gap-4">
 
-  <div class="glass p-4 rounded-xl">
-    <h2>Status</h2>
-    <p id="status">Connecting...</p>
-    <p id="latency">Latency: -- ms</p>
-  </div>
+  <!-- ══════════════ ROW 1 ══════════════ -->
 
-  <div class="glass p-4 rounded-xl">
-    <h2>Mic Levels</h2>
-    <div class="space-y-2">
-      <div class="h-3 bg-gray-700"><div id="r1" class="h-3 bg-green-400"></div></div>
-      <div class="h-3 bg-gray-700"><div id="r2" class="h-3 bg-blue-400"></div></div>
-      <div class="h-3 bg-gray-700"><div id="r3" class="h-3 bg-red-400"></div></div>
+  <!-- MIC LEVELS -->
+  <div class="glass p-4">
+    <h2 class="text-xs uppercase tracking-widest text-slate-400 mb-3">Mic Levels (RMS)</h2>
+    <div class="space-y-3">
+      <div>
+        <div class="flex justify-between text-xs mb-1">
+          <span>Mic 1</span><span id="rms0-val">0.000</span>
+        </div>
+        <div class="bar-track">
+          <div id="bar0" class="bar-fill" style="width:0%;background:#22c55e"></div>
+        </div>
+      </div>
+      <div>
+        <div class="flex justify-between text-xs mb-1">
+          <span>Mic 2</span><span id="rms1-val">0.000</span>
+        </div>
+        <div class="bar-track">
+          <div id="bar1" class="bar-fill" style="width:0%;background:#3b82f6"></div>
+        </div>
+      </div>
+      <div>
+        <div class="flex justify-between text-xs mb-1">
+          <span>Mic 3</span><span id="rms2-val">0.000</span>
+        </div>
+        <div class="bar-track">
+          <div id="bar2" class="bar-fill" style="width:0%;background:#f97316"></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Noise Reduction % -->
+    <div class="mt-4 text-center">
+      <div class="text-4xl font-bold text-emerald-400" id="nr-pct">0%</div>
+      <div class="text-xs text-slate-400 mt-1">Noise Removed</div>
     </div>
   </div>
 
-  <div class="glass p-4 rounded-xl col-span-2 text-center">
-    <h2>Sound Direction</h2>
-    <div id="direction" class="text-4xl mt-2">⬤</div>
+  <!-- STATUS + CONTROLS -->
+  <div class="glass p-4">
+    <h2 class="text-xs uppercase tracking-widest text-slate-400 mb-3">System Status</h2>
+    <div class="space-y-2 text-sm">
+      <div class="flex justify-between">
+        <span class="text-slate-400">WebSocket</span>
+        <span id="ws-text" class="font-medium text-yellow-400">Connecting</span>
+      </div>
+      <div class="flex justify-between">
+        <span class="text-slate-400">ESP32</span>
+        <span id="esp-text" class="font-medium text-red-400">Offline</span>
+      </div>
+      <div class="flex justify-between">
+        <span class="text-slate-400">Latency</span>
+        <span id="latency" class="font-medium">-- ms</span>
+      </div>
+      <div class="flex justify-between">
+        <span class="text-slate-400">DSP Chunks</span>
+        <span id="dsp-chunks" class="font-medium">0</span>
+      </div>
+      <div class="flex justify-between">
+        <span class="text-slate-400">Frames Rx</span>
+        <span id="frames-rx" class="font-medium text-xs">ch0:0 ch1:0</span>
+      </div>
+      <div class="flex justify-between">
+        <span class="text-slate-400">NR Mode</span>
+        <span id="nr-mode" class="font-medium text-emerald-400">ON</span>
+      </div>
+    </div>
+
+    <!-- Controls -->
+    <div class="mt-4 space-y-2">
+      <button onclick="toggleNR()"
+        class="w-full py-2 rounded-lg font-semibold text-sm transition-all"
+        id="nr-btn"
+        style="background:#7c3aed;color:white">
+        Toggle Noise Reduction
+      </button>
+      <button onclick="reconnect()"
+        class="w-full py-2 rounded-lg font-semibold text-sm"
+        style="background:rgba(255,255,255,0.08);color:#94a3b8">
+        Reconnect WS
+      </button>
+    </div>
   </div>
 
-  <div class="glass p-4 rounded-xl col-span-3 text-center">
-    <button onclick="toggleNR()" class="bg-purple-600 px-4 py-2 rounded">
-      Toggle Noise Reduction
-    </button>
-    <p id="nrState" class="mt-2 text-lg">NR: ON</p>
+  <!-- SOUND DIRECTION -->
+  <div class="glass p-4 flex flex-col items-center justify-center">
+    <h2 class="text-xs uppercase tracking-widest text-slate-400 mb-4">Sound Direction</h2>
+    <div id="direction" class="text-6xl mb-2">⬤</div>
+    <div id="dir-label" class="text-slate-400 text-sm">Balanced</div>
   </div>
 
-</div>
+  <!-- ══════════════ ROW 2 ══════════════ -->
+
+  <!-- WAVEFORM -->
+  <div class="glass p-4 lg:col-span-2">
+    <h2 class="text-xs uppercase tracking-widest text-slate-400 mb-2">
+      Waveform &nbsp;
+      <span class="text-red-400">━ Raw</span>
+      <span class="ml-2 text-emerald-400">━ Cleaned</span>
+    </h2>
+    <canvas id="wave-canvas" height="100"></canvas>
+  </div>
+
+  <!-- FFT SPECTRUM -->
+  <div class="glass p-4">
+    <h2 class="text-xs uppercase tracking-widest text-slate-400 mb-2">
+      FFT Spectrum &nbsp;
+      <span class="text-red-400">━ Raw</span>
+      <span class="ml-2 text-emerald-400">━ Clean</span>
+    </h2>
+    <canvas id="fft-canvas" height="100"></canvas>
+  </div>
+
+  <!-- ══════════════ ROW 3 — AUDIO PLAYERS ══════════════ -->
+  <div class="glass p-4 lg:col-span-3">
+    <h2 class="text-xs uppercase tracking-widest text-slate-400 mb-3">
+      Audio Comparison &nbsp;
+      <span class="text-xs text-slate-500">(updates every ~1.6s when ESP32 is streaming)</span>
+    </h2>
+    <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+      <div>
+        <p class="text-xs text-slate-400 mb-1">🔴 Original (raw mix)</p>
+        <audio id="rawPlayer" controls class="w-full" style="filter:hue-rotate(0deg)"></audio>
+      </div>
+      <div>
+        <p class="text-xs text-slate-400 mb-1">🟢 Noise Cancelled</p>
+        <audio id="cleanPlayer" controls class="w-full"></audio>
+      </div>
+    </div>
+  </div>
+
+</div><!-- end grid -->
 
 <script>
-const WS_URL = "wss://brilliant-courtesy-production-183a.up.railway.app/dashboard";
+// ─────────────────────────────────────────────────────
+//  WEBSOCKET  — uses window.location so URL never breaks
+// ─────────────────────────────────────────────────────
+const WS_URL = `wss://${window.location.host}/dashboard`;
 
-let lastTime = Date.now();
-let nrEnabled = true;
+let ws         = null;
+let nrEnabled  = true;
+let lastMsgTime = Date.now();
 
-// ================= CHART =================
-const fftChart = new Chart(document.getElementById("fft"), {
-  type: "bar",
-  data: { labels: [], datasets: [
-    { data: [], backgroundColor: "lime" }
-  ]},
-  options: { animation:false, scales:{x:{display:false}} }
+// ─────────────────────────────────────────────────────
+//  CHART.JS — Waveform (line chart)
+// ─────────────────────────────────────────────────────
+const waveCtx = document.getElementById('wave-canvas').getContext('2d');
+const waveChart = new Chart(waveCtx, {
+  type: 'line',
+  data: {
+    labels: [],
+    datasets: [
+      {
+        label: 'Raw',
+        data: [],
+        borderColor: 'rgba(239,68,68,0.8)',
+        backgroundColor: 'transparent',
+        borderWidth: 1.5,
+        pointRadius: 0,
+        tension: 0.2
+      },
+      {
+        label: 'Cleaned',
+        data: [],
+        borderColor: 'rgba(34,197,94,0.9)',
+        backgroundColor: 'transparent',
+        borderWidth: 1.5,
+        pointRadius: 0,
+        tension: 0.2
+      }
+    ]
+  },
+  options: {
+    animation: false,
+    responsive: true,
+    plugins: { legend: { display: false } },
+    scales: {
+      x: { display: false },
+      y: {
+        min: -32768, max: 32768,
+        grid: { color: 'rgba(255,255,255,0.05)' },
+        ticks: { color: '#64748b', font: { size: 10 } }
+      }
+    }
+  }
 });
 
-// ================= WS =================
-const ws = new WebSocket(WS_URL);
-
-ws.onopen = () => {
-  document.getElementById("status").innerText = "✅ Connected";
-};
-
-ws.onmessage = (e) => {
-  const now = Date.now();
-  document.getElementById("latency").innerText = "Latency: " + (now - lastTime) + " ms";
-  lastTime = now;
-
-  const d = JSON.parse(e.data);
-
-  // ===== AUDIO PLAYBACK (WAV FIX) =====
-  if (d.audio_raw && d.audio_clean) {
-    const rawBlob = base64ToBlob(d.audio_raw);
-    const cleanBlob = base64ToBlob(d.audio_clean);
-
-    document.getElementById("rawPlayer").src = URL.createObjectURL(rawBlob);
-    document.getElementById("cleanPlayer").src = URL.createObjectURL(cleanBlob);
+// ─────────────────────────────────────────────────────
+//  CHART.JS — FFT (bar chart)
+// ─────────────────────────────────────────────────────
+const fftCtx = document.getElementById('fft-canvas').getContext('2d');
+const fftChart = new Chart(fftCtx, {
+  type: 'bar',
+  data: {
+    labels: [],
+    datasets: [
+      {
+        label: 'Raw',
+        data: [],
+        backgroundColor: 'rgba(239,68,68,0.5)',
+        borderColor: 'transparent',
+        borderWidth: 0
+      },
+      {
+        label: 'Cleaned',
+        data: [],
+        backgroundColor: 'rgba(34,197,94,0.6)',
+        borderColor: 'transparent',
+        borderWidth: 0
+      }
+    ]
+  },
+  options: {
+    animation: false,
+    responsive: true,
+    plugins: { legend: { display: false } },
+    scales: {
+      x: { display: false },
+      y: {
+        min: 0, max: 1,
+        grid: { color: 'rgba(255,255,255,0.05)' },
+        ticks: { color: '#64748b', font: { size: 10 } }
+      }
+    }
   }
+});
 
-  // ===== RMS (FIXED SCALING) =====
-  if (d.rms) {
-    document.getElementById("r1").style.width = (d.rms[0]*100)+"%";
-    document.getElementById("r2").style.width = (d.rms[1]*100)+"%";
-    document.getElementById("r3").style.width = (d.rms[2]*100)+"%";
-
-    let dir = "⬤";
-    if (d.rms[0] > d.rms[1] && d.rms[0] > d.rms[2]) dir = "⬅️";
-    else if (d.rms[1] > d.rms[0] && d.rms[1] > d.rms[2]) dir = "➡️";
-    else if (d.rms[2] > d.rms[0] && d.rms[2] > d.rms[1]) dir = "⬆️";
-
-    document.getElementById("direction").innerText = dir;
-  }
-
-  // ===== FFT =====
-  if (d.fft_cleaned) {
-    fftChart.data.labels = d.fft_cleaned.map((_,i)=>i);
-    fftChart.data.datasets[0].data = d.fft_cleaned;
-    fftChart.update();
-  }
-};
-
-ws.onclose = () => {
-  document.getElementById("status").innerText = "❌ Disconnected";
-};
-
-// ================= HELPERS =================
-function base64ToBlob(base64) {
-  const byteChars = atob(base64);
-  const byteNumbers = new Array(byteChars.length);
-
-  for (let i = 0; i < byteChars.length; i++) {
-    byteNumbers[i] = byteChars.charCodeAt(i);
-  }
-
-  return new Blob([new Uint8Array(byteNumbers)], { type: "audio/wav" });
+// ─────────────────────────────────────────────────────
+//  UPDATE CHARTS
+// ─────────────────────────────────────────────────────
+function updateWaveform(raw, clean) {
+  if (!raw || !raw.length) return;
+  const labels = raw.map((_, i) => i);
+  waveChart.data.labels             = labels;
+  waveChart.data.datasets[0].data   = raw;
+  waveChart.data.datasets[1].data   = clean || [];
+  waveChart.update('none');  // 'none' = skip animation for real-time
 }
 
-// ================= CONTROL =================
+function updateFFT(fftRaw, fftClean) {
+  if (!fftRaw || !fftRaw.length) return;
+  const labels = fftRaw.map((_, i) => i);
+  fftChart.data.labels             = labels;
+  fftChart.data.datasets[0].data   = fftRaw;
+  fftChart.data.datasets[1].data   = fftClean || [];
+  fftChart.update('none');
+}
+
+// ─────────────────────────────────────────────────────
+//  RMS BARS
+// ─────────────────────────────────────────────────────
+function updateRMS(rms) {
+  if (!rms) return;
+  const MAX = 0.3;  // typically peaks around 0.1–0.3 in normal speech
+  for (let i = 0; i < 3; i++) {
+    const pct = Math.min(100, (rms[i] / MAX) * 100);
+    const bar = document.getElementById(`bar${i}`);
+    const val = document.getElementById(`rms${i}-val`);
+    if (bar) bar.style.width = pct + '%';
+    if (val) val.textContent = rms[i].toFixed(3);
+  }
+
+  // Sound direction
+  const dirEl    = document.getElementById('direction');
+  const dirLabel = document.getElementById('dir-label');
+  if (rms[0] > rms[1] * 1.3) {
+    dirEl.textContent    = '⬅️';
+    dirLabel.textContent = 'Left (Mic1)';
+  } else if (rms[1] > rms[0] * 1.3) {
+    dirEl.textContent    = '➡️';
+    dirLabel.textContent = 'Right (Mic2)';
+  } else if (rms[2] > rms[0] * 1.3 && rms[2] > rms[1] * 1.3) {
+    dirEl.textContent    = '⬆️';
+    dirLabel.textContent = 'Center (Mic3)';
+  } else {
+    dirEl.textContent    = '⬤';
+    dirLabel.textContent = 'Balanced';
+  }
+}
+
+// ─────────────────────────────────────────────────────
+//  AUDIO PLAYER UPDATE
+// ─────────────────────────────────────────────────────
+function updateAudio(rawB64, cleanB64) {
+  if (!rawB64 || !cleanB64) return;
+  try {
+    document.getElementById('rawPlayer').src   = 'data:audio/wav;base64,' + rawB64;
+    document.getElementById('cleanPlayer').src = 'data:audio/wav;base64,' + cleanB64;
+  } catch (e) {
+    console.warn('Audio update failed:', e);
+  }
+}
+
+// ─────────────────────────────────────────────────────
+//  STATUS UPDATERS
+// ─────────────────────────────────────────────────────
+function setWSStatus(connected) {
+  const wsInd  = document.getElementById('ws-indicator');
+  const wsText = document.getElementById('ws-text');
+  if (connected) {
+    wsInd.innerHTML  = '<span class="dot dot-green"></span>Connected';
+    wsText.textContent = 'Connected';
+    wsText.className = 'font-medium text-emerald-400';
+  } else {
+    wsInd.innerHTML  = '<span class="dot dot-red"></span>Disconnected';
+    wsText.textContent = 'Disconnected';
+    wsText.className = 'font-medium text-red-400';
+  }
+}
+
+function setESP32Status(connected) {
+  const espInd  = document.getElementById('esp-indicator');
+  const espText = document.getElementById('esp-text');
+  if (connected) {
+    espInd.innerHTML  = '<span class="dot dot-green"></span>ESP32 ✅';
+    espText.textContent = 'Online';
+    espText.className = 'font-medium text-emerald-400';
+  } else {
+    espInd.innerHTML  = '<span class="dot dot-red"></span>ESP32 ❌';
+    espText.textContent = 'Offline';
+    espText.className = 'font-medium text-red-400';
+  }
+}
+
+// ─────────────────────────────────────────────────────
+//  WEBSOCKET
+// ─────────────────────────────────────────────────────
+function connect() {
+  ws = new WebSocket(WS_URL);
+
+  ws.onopen = () => {
+    setWSStatus(true);
+    console.log('✅ Dashboard WebSocket connected');
+  };
+
+  ws.onclose = () => {
+    setWSStatus(false);
+    setESP32Status(false);
+    console.log('❌ WebSocket closed — reconnecting in 3s');
+    setTimeout(connect, 3000);
+  };
+
+  ws.onerror = (e) => {
+    console.error('WS error:', e);
+  };
+
+  ws.onmessage = (e) => {
+    const now = Date.now();
+    document.getElementById('latency').textContent = (now - lastMsgTime) + ' ms';
+    lastMsgTime = now;
+
+    let d;
+    try { d = JSON.parse(e.data); }
+    catch { return; }
+
+    // ── ESP32 status ──
+    if (typeof d.esp32_connected !== 'undefined') {
+      setESP32Status(d.esp32_connected);
+    }
+
+    // ── NR mode ──
+    if (typeof d.nr_enabled !== 'undefined') {
+      nrEnabled = d.nr_enabled;
+      document.getElementById('nr-mode').textContent  = nrEnabled ? 'ON' : 'OFF';
+      document.getElementById('nr-mode').className    = nrEnabled
+        ? 'font-medium text-emerald-400'
+        : 'font-medium text-slate-400';
+    }
+
+    // ── DSP counters ──
+    if (d.chunk) {
+      document.getElementById('dsp-chunks').textContent   = d.chunk;
+      document.getElementById('chunk-counter').textContent = 'chunks: ' + d.chunk;
+    }
+    if (d.frames) {
+      document.getElementById('frames-rx').textContent =
+        `ch0:${d.frames[0]||0} ch1:${d.frames[1]||0}`;
+    }
+
+    // ── Noise reduction % ──
+    if (typeof d.noise_reduction !== 'undefined') {
+      document.getElementById('nr-pct').textContent = d.noise_reduction + '%';
+    }
+
+    // ── RMS bars + direction ──
+    updateRMS(d.rms);
+
+    // ── Waveform ──
+    updateWaveform(d.waveform_raw, d.waveform_cleaned);
+
+    // ── FFT ──
+    updateFFT(d.fft_raw, d.fft_cleaned);
+
+    // ── Audio players (only arrives every ~1.6s) ──
+    if (d.audio_raw && d.audio_clean) {
+      updateAudio(d.audio_raw, d.audio_clean);
+    }
+  };
+}
+
+// ─────────────────────────────────────────────────────
+//  CONTROLS
+// ─────────────────────────────────────────────────────
 function toggleNR() {
+  if (!ws || ws.readyState !== WebSocket.OPEN) return;
   nrEnabled = !nrEnabled;
-
-  ws.send(JSON.stringify({
-    noise_reduction: nrEnabled
-  }));
-
-  document.getElementById("nrState").innerText =
-    "NR: " + (nrEnabled ? "ON" : "OFF");
+  ws.send(JSON.stringify({ noise_reduction: nrEnabled }));
+  document.getElementById('nr-mode').textContent = nrEnabled ? 'ON' : 'OFF';
+  document.getElementById('nr-btn').style.background =
+    nrEnabled ? '#7c3aed' : '#374151';
 }
-</script>
 
+function reconnect() {
+  if (ws) ws.close();
+}
+
+// ─────────────────────────────────────────────────────
+//  INIT
+// ─────────────────────────────────────────────────────
+connect();
+</script>
 </body>
 </html>
