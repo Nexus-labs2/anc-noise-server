@@ -4,7 +4,7 @@ import json
 import os
 import numpy as np
 import noisereduce as nr
-from scipy.fft import rfft, rfftfreq
+from numpy.fft import rfft
 from aiohttp import web, WSMsgType
 import io
 import wave
