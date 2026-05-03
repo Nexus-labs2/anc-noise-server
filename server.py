@@ -4,11 +4,13 @@ import json
 import os
 import numpy as np
 import noisereduce as nr
-from numpy.fft import rfft
+from numpy.fft import rfft   # ✅ REPLACED SCIPY
 from aiohttp import web, WSMsgType
 import io
 import wave
 import base64
+
+print("🚀 SERVER STARTED")  # ✅ DEBUG START
 
 # =========================
 # CONFIG
@@ -34,8 +36,11 @@ def parse_frame(data: bytes):
     ch = data[0]
     count = struct.unpack_from('<H', data, 1)[0]
 
-    samples = struct.unpack_from(f'<{count}h', data, 3)
-    return ch, count, np.array(samples, dtype=np.int16)
+    try:
+        samples = struct.unpack_from(f'<{count}h', data, 3)
+        return ch, count, np.array(samples, dtype=np.int16)
+    except:
+        return None, None, None
 
 # =========================
 # WAV CONVERSION
@@ -57,13 +62,11 @@ def compute_rms(x):
     return float(rms / 32768.0)
 
 # =========================
-# FFT (REDUCED)
+# FFT (NUMPY ONLY)
 # =========================
 def compute_fft(samples):
-    windowed = samples * np.hanning(len(samples))
-    spectrum = np.abs(rfft(windowed))
-    spectrum = spectrum / np.max(spectrum + 1e-6)
-
+    spectrum = np.abs(rfft(samples))
+    spectrum = spectrum / (np.max(spectrum) + 1e-6)
     return spectrum[:100].tolist()
 
 # =========================
@@ -74,7 +77,6 @@ async def process_audio():
         await asyncio.sleep(0.1)
 
         try:
-            # Wait for enough data
             if not all(len(audio_buffers[i]) >= TARGET_SAMPLES for i in range(3)):
                 continue
 
@@ -87,17 +89,16 @@ async def process_audio():
             # Mix
             raw_mix = (chunk[0] + chunk[1] + chunk[2]) / 3.0
 
-            # 🔥 Noise profile (first 0.5 sec)
-            noise_profile = raw_mix[:int(0.5 * SAMPLE_RATE)]
-
-            # 🔥 Noise Reduction (FIXED)
+            # ✅ SAFE NOISE REDUCTION
             if CONTROL["noise_reduction"]:
-                clean_mix = nr.reduce_noise(
-                    y=raw_mix,
-                    sr=SAMPLE_RATE,
-                    y_noise=noise_profile,
-                    stationary=True
-                )
+                try:
+                    clean_mix = nr.reduce_noise(
+                        y=raw_mix,
+                        sr=SAMPLE_RATE
+                    )
+                except Exception as e:
+                    print("⚠️ NR failed:", e)
+                    clean_mix = raw_mix
             else:
                 clean_mix = raw_mix
 
@@ -105,7 +106,7 @@ async def process_audio():
             raw_int16 = (raw_mix * 32767).astype(np.int16)
             clean_int16 = (clean_mix * 32767).astype(np.int16)
 
-            # 🔥 WAV encoding (IMPORTANT FIX)
+            # WAV encode
             raw_wav = to_wav(raw_int16)
             clean_wav = to_wav(clean_int16)
 
@@ -126,10 +127,8 @@ async def process_audio():
                 "rms": rms,
                 "fft_raw": fft_raw,
                 "fft_cleaned": fft_clean,
-
                 "audio_raw": raw_b64,
                 "audio_clean": clean_b64,
-
                 "sample_rate": SAMPLE_RATE
             }
 
@@ -191,6 +190,7 @@ async def ws_dashboard_handler(request):
 
                 if "noise_reduction" in data:
                     CONTROL["noise_reduction"] = data["noise_reduction"]
+                    print("🎛️ NR:", CONTROL["noise_reduction"])
 
     finally:
         dashboard_clients.discard(ws)
@@ -203,20 +203,32 @@ async def ws_dashboard_handler(request):
 async def index(request):
     return web.FileResponse("index.html")
 
+# ✅ HEALTHCHECK FIX
+async def health(request):
+    return web.Response(text="OK")
+
+# =========================
+# APP INIT
+# =========================
 app = web.Application()
 
 app.router.add_get('/', index)
+app.router.add_get('/health', health)   # ✅ IMPORTANT
 app.router.add_get('/ws', ws_audio_handler)
 app.router.add_get('/dashboard', ws_dashboard_handler)
 
 # =========================
-# START
+# START BACKGROUND TASK
 # =========================
 async def start_bg(app):
     app["task"] = asyncio.create_task(process_audio())
 
 app.on_startup.append(start_bg)
 
+# =========================
+# MAIN
+# =========================
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8080))
+    print("🌐 Listening on port", port)
     web.run_app(app, host="0.0.0.0", port=port)
